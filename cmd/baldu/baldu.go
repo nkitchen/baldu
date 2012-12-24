@@ -4,6 +4,7 @@ import "container/heap"
 import "flag"
 import "fmt"
 import "log"
+import "math"
 import "os"
 import "path/filepath"
 
@@ -21,7 +22,7 @@ type queue []*node
 var verbose bool
 
 func main() {
-	flag.BoolVar(&verbose, "verbose", true, "")
+	flag.BoolVar(&verbose, "verbose", false, "")
 
     var maxNodes int = 0
 	flag.IntVar(&maxNodes, "max", 100, "Maximum number of files displayed")
@@ -36,33 +37,58 @@ func main() {
 	tree := &node{path: root, isDir: true}
 	tree.expand(maxNodes)
 	selected := []*node{tree}
-	fringe := []*node{tree}
+	fringe := queue([]*node{tree})
 
     for len(selected) < maxNodes && len(fringe) > 0 {
-		biggest := heap.Pop(queue(fringe)).(*node)
+		biggest := heap.Pop(&fringe).(*node)
+		if verbose {
+			fmt.Println("Next selected: ", biggest.path)
+		}
+
 		if biggest.isDir && !biggest.expanded {
-			// TODO: Expand all unexpanded nodes on fringe, with
-			// count allocated proportionately to size.
-			// XXX Is this the best approach?
+			thisSize := float64(biggest.treeSize)
+			totalSize := thisSize
+			for _, m := range fringe {
+				totalSize += float64(m.treeSize)
+			}
+
+			// Assume that the number of nodes below all of those currently
+			// in the fringe will be proportionate to their tree sizes.
+			nodesNeeded := float64(maxNodes - len(selected))
+			p := thisSize / totalSize * nodesNeeded
+			thisTargetCount := int(math.Min(2, math.Ceil(p)))
+			biggest.expand(thisTargetCount)
 		}
 		if len(selected) + len(biggest.children) <= maxNodes {
 			selected = append(selected, biggest.children...)
 			for _, c := range biggest.children {
-				heap.Push(queue(fringe), c)
+				heap.Push(&fringe, c)
 			}
 		}
+	}
+
+	for _, n := range selected {
+		fmt.Printf("%v\t%s\n", n.treeSize, n.path)
 	}
 }
 
 func (n *node) expand(targetCount int) {
+	if verbose {
+		fmt.Println("Expanding ", n.path, "; target:", targetCount)
+	}
+
 	expanded := 0
 	q := []*node{n}
-	unsized := []*node{}
+	dirs := []*node{n}
 	for expanded < targetCount && len(q) > 0 {
 		n = q[0]
 		q = q[1:]
 		expanded++
 		n.expanded = true
+		if verbose {
+			fmt.Println("Expanded ", n.path)
+		}
+
 		f, err := os.Open(n.path)
 		if err != nil {
 			log.Println(err)
@@ -77,20 +103,30 @@ func (n *node) expand(targetCount int) {
 		for _, c := range childInfo {
 			child := &node{path: filepath.Join(n.path, c.Name()),
 			               size: c.Size(), isDir: c.IsDir()}
-			if !child.isDir {
+			if child.isDir {
+				q = append(q, child)
+				dirs = append(dirs, child)
+			} else {
 				child.treeSize = child.size
-			}
+			} 
 			n.children = append(n.children, child)
-			unsized = append(unsized, child)
-		}
-	}
-	for _, n = range q {
-		if n.treeSize == 0 {
-			unsized = append(unsized, n)
 		}
 	}
 
-	for _, n = range unsized {
+	for _, n = range dirs {
+		n.setTreeSizes()
+	}
+}
+
+// setTreeSizes updates the treeSizes of the nodes in the subtree.
+func (n *node) setTreeSizes() {
+	if (len(n.children) > 0) {
+		n.treeSize = n.size
+		for _, c := range n.children {
+			c.setTreeSizes()
+			n.treeSize += c.treeSize
+		}
+	} else {
 		n.treeSize = treeSize(n.path, n.size, n.isDir)
 	}
 }
